@@ -1,5 +1,5 @@
-# UIX-Light Iconinator
-Automatically build and pack game icons for the games launcher in UIX Light beta.
+# UIX-Lite Iconinator
+Automatically build and pack game icons for the games launcher in UIX Lite beta.
 
 > [!WARNING]  
 > This project is just a PoC<br>
