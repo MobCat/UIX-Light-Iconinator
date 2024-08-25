@@ -11,7 +11,7 @@ executables = [
 ]
 
 setup(name='Iconinator',
-      version = '0.2',
+      version = '0.3',
       description = 'Automatically build and pack game icons for the games launcher in UIX Light',
       options = {'build_exe': build_options},
       executables = executables)
