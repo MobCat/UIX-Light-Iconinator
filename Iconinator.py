@@ -11,6 +11,8 @@
 #TODO:
 # Try and rip icons from xbes first, then download from UData, and if both of those fail, then finally try an icon CDN download.
 # Maybe also figure out if we can "fix" fake xbx images to real ones.
+# ftplib.error_perm: 553 "/E/Games/put games here.txt": Directory not found
+#  Pyhtongs ftp lib is busted af. we have to add a blacklist to the dir list for `put games here.txt`
 
 import configparser
 import ftplib
@@ -35,7 +37,7 @@ print('''
 ▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒▒   ▒▒▒▒▒▒ ▒▒▒▒▒ ▒▒▒   ▒▒   ▒▒▒   ▒▒  ▒▒   ▒▒▒ ▒▒ ▒▒  ▒▒▒  ▒▒  ▒▒▒▒▒▒
 ░░░░     ░░░░         ░░   ░░░   ░░   ░░   ░░░   ░░░    ░ ░░░░  ░░░░░   ░░░░  ░░░░░░
 ────────────────────────────────────────────────────────────────────────────────────
-Iconinator 20240827
+Iconinator 20240828
 Automatically building an icon pack for the games launcher,
 based on the content you have installed on your Xbox HDD.
 ''')
@@ -59,6 +61,17 @@ def getIP():
 
 	return ['.'.join(IP.split('.')[:3]), portCheck] # Weird hack but ok.
 
+def getInitStr(xboxIP, xboxPort):
+	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	sock.connect((xboxIP, xboxPort))
+	# We are not building hdd info from sysInfo yet. See Installinator.py for full code.
+	sysInfo   = sock.recv(1024).decode("utf-8").split("\r\n")
+	sock.send('USER'.encode())
+	# The string we want is 26 bytes, we are grabbing a few extra just in case..
+	# This code is still weird af, but as long as it works....
+	initStr = sock.recv(30).decode("utf-8")[4:].strip('\r\n')
+	sock.close()
+	return initStr
 
 # Load custom or default settings ini based on command args.
 config = configparser.ConfigParser()
@@ -93,9 +106,15 @@ if not os.path.isfile(settingsINI):
 		NewXboxIP = CustomIP[0]
 		newXboxPort = int(CustomIP[1])
 
+	initStr = getInitStr(NewXboxIP, newXboxPort)
+	if initStr == 'UnleashX FTP Server ready.':
+		UnleashXCheck = input("""Iconinator has decated that the target xbox is running an UnleashX FTP server.
+Iconinator Can send special FTP commands to this server.
+Do you wish to enable auto reboot to UIX Lite functionality? [Y/n]: """)
+		UnleashXCheck = False if UnleashXCheck == 'n' else True
 		
 	print(f"Saving {settingsINI} with default ftp login creds.\n")
-	config['UIXinator'] = {'xbox_IP': NewXboxIP, 'xbox_port': newXboxPort, 'ftp_Login': 'xbox:xbox', 'cleanup': 'True', 'auto_reboot': 'False', 'icon_cdn ': 'https://raw.githubusercontent.com/MobCat/MobCats-original-xbox-game-list/main/xbx'}
+	config['UIXinator'] = {'xbox_IP': NewXboxIP, 'xbox_port': newXboxPort, 'ftp_Login': 'xbox:xbox', 'cleanup': 'True', 'auto_reboot': UnleashXCheck, 'icon_cdn ': 'https://raw.githubusercontent.com/MobCat/MobCats-original-xbox-game-list/main/xbx'}
 	with open(settingsINI, 'w') as newConfig:
 		config.write(newConfig)
 ########################################################################################################################
@@ -150,19 +169,39 @@ except ConnectionRefusedError as e:
 # Funky funcs
 def DirLST(ftp_obj, path="."):
 	templst = []
-	ftp_obj.cwd("/") # Get back to root, so we can index other paths. F/Games, G/Games
+	# Get back to root, so we can index other paths. F/Games, G/Games
+	ftp_obj.cwd("/") 
+	# Only check dirs. There is some junk in the ftp_obj, like file attributes.
 	try:
 		ftp_obj.cwd(path)
 	except:
 		return templst
 
-	contents = ftp_obj.nlst()
-	current_path = ftp_obj.pwd()
+	contents    = ftp_obj.nlst()
+	currentPath = ftp_obj.pwd()
 	for item in contents:
-		if item not in [".", ".."]: #CURSED:
-			ftp_obj.cwd(f"{current_path}/{item}")
-			if "default.xbe" in ftp_obj.nlst():
-				templst.append(f"{current_path}/{item}")
+		try:
+			itemPath = f"{currentPath}/{item}"
+			ftp_obj.nlst(itemPath) # Check path first
+			ftp_obj.cwd(itemPath)  # Then change path
+
+			# Only filter for executable games.
+			checkForicons = ['default.xbx', 'default.jpg']
+			itemChecks = []
+			if "default.xbe" in [item.lower() for item in ftp_obj.nlst()]:
+				itemChecks.append(itemPath)
+				for customIcon in checkForicons:
+					if customIcon in [item.lower() for item in ftp_obj.nlst()] and len(itemChecks) < 2:
+						itemChecks.append(customIcon)
+
+				if len(itemChecks) < 2:
+					itemChecks.append(False)
+
+			templst.append(itemChecks)
+
+		except ftplib.error_perm:
+			continue # If item is not a dir, or erros of any of FTP reson, we bail.
+
 	return templst
 
 def DownloadFTP(ftp_obj, remote_path, local_path):
@@ -237,29 +276,49 @@ titleIDs = [] # Use for later
 print("Downloading xbes and extracting title IDs...\nPlease wait, some large xbes will take time to download...")
 for iniDir in dashPaths:
 	dirlst = DirLST(ftp, iniDir)
+	#print(f'{dirlst=}')
 	if len(dirlst) != 0:
 		maxlen = len(dirlst)
 		cnt = 1
 		for gameDir in dirlst:
+			#print(f'{gameDir=}')
 			print(f"[{iniDir} {cnt}/{maxlen}] Downloading xbes and extracting title IDs...              ", end="\r")
-			DownloadFTP(ftp, f'{gameDir}/default.xbe', 'default.xbe')
+			#BUG: *Sometimes* the ftp is not ready.. so nothing is download. crashing xbeJson..
+			# and idk if this "fix" is "correct".. it's at least missing an exit()
+			errcnt = 0
+			while (errcnt < 3):
+				err = DownloadFTP(ftp, f'{gameDir[0]}/default.xbe', 'default.xbe')
+				if err is not None:
+					errcnt += 1
+				else:
+					break
+
 
 			# pyxbe almost worked, but it's having virtual address offset issues..
 			# It can't handle malformed xbes or xbes with unexpected data yet..
 			#xbe = Xbe.from_file('default.xbe')
 			#titleID = hex(xbe.cert.title_id)[2:]
 
-			# Backup, Use XBEJson to dump xbe info as json and read back said json.
+			# Use XBEJson to dump xbe info as json and read back said json.
 			conout = subprocess.run(f'lib/XBEJson.exe default.xbe', stdout=subprocess.PIPE).stdout.decode()
 			xbeJson = json.loads(conout)
 			titleID = xbeJson['Title_ID'].lower()
-			UIXpaths.append(f'{gameDir.split("/")[-1]}={titleID}')
+			UIXpaths.append(f'{gameDir[0].split("/")[-1]}={titleID}')
 			titleIDs.append(titleID)
+
+			# Download a custom game icon default.xbx or default.jpg
+			#TODO: Convert jpg to xbx.
+			''' Come back to this lator, the bones are there now though.
+			# We could do a stop gap of if gameDir[1] == 'default.xbx'
+			# But I dont want to half ass the custom icons system.
+			if gameDir[1]:
+				DownloadFTP(ftp, f'{gameDir[0]}/{gameDir[1]}', f'xbx/{titleID}.{gameDir[1][-3:]}')
+			'''
 			cnt += 1
 		cnt = 1
 	else:
-		#input(f"{iniDir} Does not exist on your xbox.")
-		print(f"[{iniDir} ?/?] This file path does not exist on your xbox.                              ", end="\r")
+		#print(f"/{iniDir} Does not exist on your xbox.")
+		print(f"[{iniDir}    ] This file path does not exist on your xbox.                              ", end="\r")
 
 # quick house keeping.
 os.remove('default.xbe')
@@ -287,16 +346,23 @@ badcnt = 0
 addcnt = 0
 for titleID in titleIDs:
 	ftp.cwd("/")
-	err = DownloadFTP(ftp, f'E/UData/{titleID}/TitleImage.xbx', f'xbx/{titleID}.xbx')
-	if err is not None:
-		print(f'{titleID}.xbx Not found on xbox, Downloading from db...         ', end="\r")
-		err = DownloadWEB(titleID)
+	# If we havent downloaded a custom icon from the games dir or ripped one from the xbe yet, or the xbx is just *missing*
+	# Download the icon from xbox save data, if that failes too, then finaly grab a copy of the cdn.
+	# this triple if else do be ugly as sin..
+	if os.path.isfile(f'xbx/{titleID}.xbx') == False:
+		err = DownloadFTP(ftp, f'E/UData/{titleID}/TitleImage.xbx', f'xbx/{titleID}.xbx')
 		if err is not None:
-			print(f'{titleID}.xbx Not on CDN...                                 ', end="\r")
-			errcnt += 1
+			print(f'{titleID}.xbx Not found on xbox, Downloading from db...         ', end="\r")
+			err = DownloadWEB(titleID)
+			if err is not None:
+				print(f'{titleID}.xbx Not on CDN...                                 ', end="\r")
+				errcnt += 1
+			else:
+				addcnt += 1
 		else:
 			addcnt += 1
 	else:
+		#Assume we have got icons from DirLst / extracting xbes. Or its left over if cleanup = False.
 		addcnt += 1
 
 	# Shitty check
@@ -305,14 +371,14 @@ for titleID in titleIDs:
 		with open(f'xbx/{titleID}.xbx', 'rb') as file:
 			fileMagic = file.read(4)
 		if fileMagic.hex() != '58505230':
-			print(f'{titleID}.xbx Was "fake". Removing..')
+			#TODO: make a whole ass xbx image processor
+			# If it is an xbx, make sure its not to big
+			# if its not, force convert it to an xbx.
+			# I would like to keep the transparency if I can..
+			print(f'{titleID}.xbx Was "fake". Removing..                              ', end="\r")
 			os.remove(f'xbx/{titleID}.xbx')
 			badcnt += 1
 			addcnt -= 1
-			#TODO: Maybe we could replace with a missing icon?
-			#Or lol just wait for someone to make a CND with pre formatted xbxs
-			#These xbx icons from my DB are direct rips from the game, so if the dev played it fast'n'lose with the spec
-			#it brakes the launcher but not the memory view for some reason.
 print(f"Done. {addcnt} icons where added to your default.xip icon pack.")
 
 
