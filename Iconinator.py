@@ -11,8 +11,6 @@
 #TODO:
 # Try and rip icons from xbes first, then download from UData, and if both of those fail, then finally try an icon CDN download.
 # Maybe also figure out if we can "fix" fake xbx images to real ones.
-# ftplib.error_perm: 553 "/E/Games/put games here.txt": Directory not found
-#  Pyhtongs ftp lib is busted af. we have to add a blacklist to the dir list for `put games here.txt`
 
 import configparser
 import ftplib
